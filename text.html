@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TTS MP3 miễn phí</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0f172a; --card:#111827; --text:#e5e7eb; --muted:#94a3b8; --line:rgba(148,163,184,.2); --g:#22c55e; --b:#38bdf8; }
+    body { margin:0; min-height:100vh; display:grid; place-items:center; background:linear-gradient(180deg,#020617,#0f172a); color:var(--text); font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; padding:16px; box-sizing:border-box; }
+    .app { width:100%; max-width:860px; background:rgba(17,24,39,.95); border:1px solid var(--line); border-radius:18px; padding:16px; box-shadow:0 20px 60px rgba(0,0,0,.35); }
+    h1 { margin:0 0 6px; font-size:22px; }
+    p { margin:0 0 14px; color:var(--muted); line-height:1.5; }
+    textarea, select, input[type="range"] {
+      width:100%; box-sizing:border-box; border-radius:12px; border:1px solid var(--line);
+      background:#020617; color:var(--text); padding:12px; font-size:16px;
+    }
+    textarea { min-height:190px; resize:vertical; line-height:1.5; }
+    .grid { display:grid; gap:12px; grid-template-columns:repeat(2,minmax(0,1fr)); margin-top:12px; }
+    .full { grid-column:1 / -1; }
+    label { display:block; font-size:14px; color:var(--muted); margin:2px 0 6px; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; margin-top:14px; }
+    button {
+      appearance:none; border:0; border-radius:12px; padding:12px 16px; font-size:16px; font-weight:700;
+      cursor:pointer; color:#04111f; background:var(--g); flex:1 1 140px;
+    }
+    button.secondary { background:var(--b); }
+    button.gray { background:#cbd5e1; }
+    button:disabled { opacity:.6; cursor:not-allowed; }
+    .small { font-size:13px; color:var(--muted); margin-top:10px; line-height:1.5; }
+    .value { font-weight:700; color:#fff; }
+    .status { margin-top:12px; padding:10px 12px; border:1px solid var(--line); border-radius:12px; background:rgba(2,6,23,.75); }
+    @media (max-width:640px){ .grid{grid-template-columns:1fr;} }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <h1>TTS miễn phí 100% + tải MP3</h1>
+    <p>Chạy ngay trên trình duyệt. Không API key, không backend, không tài khoản trả phí.</p>
+
+    <label for="text">Văn bản</label>
+    <textarea id="text">Xin chào, đây là công cụ TTS miễn phí có thể tải xuống thành MP3.</textarea>
+
+    <div class="grid">
+      <div>
+        <label for="voice">Giọng đọc</label>
+        <select id="voice"></select>
+      </div>
+      <div>
+        <label for="lang">Ngôn ngữ ưu tiên</label>
+        <select id="lang">
+          <option value="vi-VN" selected>Tiếng Việt</option>
+          <option value="en-US">English (US)</option>
+          <option value="ja-JP">日本語</option>
+          <option value="ko-KR">한국어</option>
+        </select>
+      </div>
+      <div>
+        <label for="rate">Tốc độ: <span class="value" id="rateVal">1.0</span></label>
+        <input id="rate" type="range" min="0.5" max="2" step="0.1" value="1">
+      </div>
+      <div>
+        <label for="pitch">Cao độ: <span class="value" id="pitchVal">1.0</span></label>
+        <input id="pitch" type="range" min="0" max="2" step="0.1" value="1">
+      </div>
+      <div class="full">
+        <label for="volume">Âm lượng: <span class="value" id="volumeVal">1.0</span></label>
+        <input id="volume" type="range" min="0" max="1" step="0.1" value="1">
+      </div>
+    </div>
+
+    <div class="row">
+      <button id="play">Phát</button>
+      <button id="stop" class="secondary">Dừng</button>
+      <button id="downloadMp3" class="gray">Tải MP3</button>
+    </div>
+
+    <div class="status" id="status">Sẵn sàng.</div>
+    <div class="small">
+      Ghi chú: trình duyệt phải hỗ trợ Web Speech API và MediaRecorder. ffmpeg.wasm sẽ được tải khi bạn bấm “Tải MP3”, nên lần đầu có thể chậm hơn.
+    </div>
+  </div>
+
+  <script type="module">
+    import { FFmpeg } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js';
+    import { fetchFile, toBlobURL } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js';
+
+    const textEl = document.getElementById('text');
+    const voiceEl = document.getElementById('voice');
+    const rateEl = document.getElementById('rate');
+    const pitchEl = document.getElementById('pitch');
+    const volumeEl = document.getElementById('volume');
+    const langEl = document.getElementById('lang');
+    const rateVal = document.getElementById('rateVal');
+    const pitchVal = document.getElementById('pitchVal');
+    const volumeVal = document.getElementById('volumeVal');
+    const statusEl = document.getElementById('status');
+    const playBtn = document.getElementById('play');
+    const stopBtn = document.getElementById('stop');
+    const dlBtn = document.getElementById('downloadMp3');
+
+    let voices = [];
+    let ffmpeg;
+    let ffmpegReady = false;
+
+    function setStatus(msg) { statusEl.textContent = msg; }
+    function refreshValues() {
+      rateVal.textContent = Number(rateEl.value).toFixed(1);
+      pitchVal.textContent = Number(pitchEl.value).toFixed(1);
+      volumeVal.textContent = Number(volumeEl.value).toFixed(1);
+    }
+
+    function populateVoices() {
+      voices = window.speechSynthesis?.getVoices?.() || [];
+      const preferredLang = langEl.value;
+      const filtered = voices.filter(v => v.lang && v.lang.toLowerCase().startsWith(preferredLang.split('-')[0].toLowerCase()));
+      const list = filtered.length ? filtered : voices;
+
+      voiceEl.innerHTML = '';
+      if (!list.length) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = 'Không có giọng';
+        voiceEl.appendChild(opt);
+        return;
+      }
+
+      list.forEach((v, i) => {
+        const opt = document.createElement('option');
+        opt.value = String(i);
+        opt.textContent = `${v.name} (${v.lang})${v.default ? ' - mặc định' : ''}`;
+        voiceEl.appendChild(opt);
+      });
+
+      const idx = list.findIndex(v => v.default);
+      voiceEl.value = idx >= 0 ? String(idx) : '0';
+    }
+
+    function makeUtterance() {
+      const text = textEl.value.trim();
+      if (!text) throw new Error('Vui lòng nhập văn bản.');
+
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.rate = parseFloat(rateEl.value);
+      utter.pitch = parseFloat(pitchEl.value);
+      utter.volume = parseFloat(volumeEl.value);
+      utter.lang = langEl.value;
+
+      const selectedVoice = voices[parseInt(voiceEl.value, 10)];
+      if (selectedVoice) utter.voice = selectedVoice;
+
+      return utter;
+    }
+
+    function speakOnce() {
+      return new Promise((resolve, reject) => {
+        try {
+          window.speechSynthesis.cancel();
+          const utter = makeUtterance();
+          utter.onend = () => resolve();
+          utter.onerror = e => reject(new Error(e.error || 'speech error'));
+          window.speechSynthesis.speak(utter);
+        } catch (err) {
+          reject(err);
+        }
+      });
+    }
+
+    async function initFFmpeg() {
+      if (ffmpegReady) return;
+      setStatus('Đang tải ffmpeg.wasm...');
+      ffmpeg = new FFmpeg();
+
+      const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm';
+      const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
+      const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
+
+      await ffmpeg.load({ coreURL, wasmURL });
+      ffmpegReady = true;
+      setStatus('ffmpeg.wasm đã sẵn sàng.');
+    }
+
+    async function downloadMp3() {
+      const text = textEl.value.trim();
+      if (!text) {
+        setStatus('Vui lòng nhập văn bản.');
+        return;
+      }
+      if (!('speechSynthesis' in window)) {
+        setStatus('Trình duyệt không hỗ trợ speechSynthesis.');
+        return;
+      }
+      if (!('MediaRecorder' in window)) {
+        setStatus('Trình duyệt không hỗ trợ MediaRecorder.');
+        return;
+      }
+
+      try {
+        playBtn.disabled = true;
+        dlBtn.disabled = true;
+        stopBtn.disabled = true;
+
+        await initFFmpeg();
+        setStatus('Đang ghi âm giọng đọc...');
+
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const dest = audioCtx.createMediaStreamDestination();
+
+        const stream = dest.stream;
+        const chunks = [];
+
+        const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+        recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+
+        const utter = makeUtterance();
+        const source = audioCtx.createMediaStreamSource(stream);
+        source.connect(audioCtx.destination);
+
+        recorder.start();
+
+        await new Promise((resolve, reject) => {
+          utter.onend = () => resolve();
+          utter.onerror = e => reject(new Error(e.error || 'speech error'));
+          window.speechSynthesis.cancel();
+          window.speechSynthesis.speak(utter);
+        });
+
+        await new Promise(r => setTimeout(r, 500));
+        recorder.stop();
+
+        const webmBlob = await new Promise(resolve => {
+          recorder.onstop = () => resolve(new Blob(chunks, { type: 'audio/webm' }));
+        });
+
+        setStatus('Đang chuyển sang MP3...');
+        await ffmpeg.writeFile('input.webm', await fetchFile(webmBlob));
+        await ffmpeg.exec(['-i', 'input.webm', '-q:a', '4', 'output.mp3']);
+
+        const data = await ffmpeg.readFile('output.mp3');
+        const mp3Blob = new Blob([data.buffer], { type: 'audio/mpeg' });
+        const url = URL.createObjectURL(mp3Blob);
+
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'tts.mp3';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        setStatus('Đã tải MP3 xuống.');
+      } catch (err) {
+        setStatus('Lỗi: ' + err.message);
+      } finally {
+        playBtn.disabled = false;
+        dlBtn.disabled = false;
+        stopBtn.disabled = false;
+      }
+    }
+
+    document.getElementById('play').addEventListener('click', async () => {
+      try {
+        setStatus('Đang phát...');
+        await speakOnce();
+        setStatus('Đã phát xong.');
+      } catch (e) {
+        setStatus('Lỗi: ' + e.message);
+      }
+    });
+
+    document.getElementById('stop').addEventListener('click', () => {
+      window.speechSynthesis.cancel();
+      setStatus('Đã dừng.');
+    });
+
+    document.getElementById('downloadMp3').addEventListener('click', downloadMp3);
+
+    [rateEl, pitchEl, volumeEl].forEach(el => el.addEventListener('input', refreshValues));
+    langEl.addEventListener('change', populateVoices);
+
+    refreshValues();
+    if ('speechSynthesis' in window) {
+      populateVoices();
+      window.speechSynthesis.onvoiceschanged = populateVoices;
+      setStatus('Trình duyệt hỗ trợ TTS.');
+    } else {
+      setStatus('Trình duyệt không hỗ trợ speechSynthesis.');
+    }
+  </script>
+</body>
+</html>
